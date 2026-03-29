@@ -1426,6 +1426,8 @@ dependencies = [
 [[package]]
 name = "ufs-macros"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba78e8d93ac957615a5b10aab7e4e34523d6eeeaf8500e57bdc049c95ef1a69"
 dependencies = [
  "proc-macro2",
  "quote",
