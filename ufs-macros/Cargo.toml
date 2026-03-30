@@ -1,0 +1,21 @@
+[package]
+name = "ufs-macros"
+version = "0.1.1"
+edition = "2024"
+
+description = "macros for ufs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/p1mo/ufs/tree/main/ufs-macros"
+readme = "README.md"
+keywords = ["js", "ts", "deno", "plugins"]
+categories = ["development-tools"]
+authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
+
+[lib]
+proc-macro = true
+path = "src/lib.rs"
+
+[dependencies]
+proc-macro2 = "1.0.106"
+quote = "1.0.45"
+syn = { version = "2.0.117", features = ["full"] }

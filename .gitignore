@@ -1,1 +1,10 @@
 /target
+**/target
+
+Cargo.lock
+**/Cargo.lock
+
+makefile
+**/makefile
+*.makefile
+**/*.makefile
