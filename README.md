@@ -18,7 +18,11 @@
     </div>
 </div>
 
+<br>
 
+**Extract Archives**
+ + Endings Supported: `.7z` `.zip` `.tar` `.tar.gz` `.tgz` `.tar.xz` `.txz`
+ + in terms of speed is the `tar` section the fastest.
 
 <br>
 
@@ -79,5 +83,23 @@ fn main() -> anyhow::Result<()> {
         println!("local > {:?}", item);
     }
 
+} 
+```
+
+
+**`Extract Archives in Embed dir & walk Static`**
+
+```rust
+use ufs::{ bind_dir, UnifiedFS, AchiveExt };
+
+fn main() -> anyhow::Result<()> {
+    //for item in bind_dir!("examples/files").iter() {
+    for item in unifs.walk(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/files")) {
+        if item.is_archive() {
+            item.archive()?.entries(|mut entry| {
+                println!("{:?} > {:?}", item.path, entry.content().unwrap().len());
+            })?;
+        }
+    }
 } 
 ```

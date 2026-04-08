@@ -6,6 +6,12 @@ mod errors;
 pub use errors::Error;
 pub use errors::Result;
 
+#[cfg(archives)]
+mod archives;
+
+#[cfg(archives)]
+pub use archives::{ ARCHIVE_EXTS, AchiveExt, Archive };
+
 mod entry;
 pub use entry::FsEntry;
 
