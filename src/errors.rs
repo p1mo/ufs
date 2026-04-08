@@ -14,7 +14,15 @@ pub enum Error {
     StripPrefixError(#[from] std::path::StripPrefixError),
 
     #[error(transparent)]
-    SerdeJsonError(#[from] serde_json::Error),   
+    SerdeJsonError(#[from] serde_json::Error),
+
+    #[cfg(zip)]
+    #[error(transparent)]
+    ZipError(#[from] zip::result::ZipError),
+
+    #[cfg(sevenz)]
+    #[error(transparent)]
+    SevenzError(#[from] sevenz_rust2::Error),
 
     //#[error(transparent)]
     //ReqwestError(#[from] reqwest::Error),

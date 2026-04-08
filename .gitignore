@@ -8,3 +8,5 @@ makefile
 **/makefile
 *.makefile
 **/*.makefile
+
+**/files
