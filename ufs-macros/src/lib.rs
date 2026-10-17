@@ -125,7 +125,7 @@ pub fn bind_dir(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         {
             ufs::UnifiedFS {
-                entries: vec![
+                entries: &[
                     #(#vec_entries),*
                 ],
                 ..Default::default()

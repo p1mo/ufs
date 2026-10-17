@@ -1,32 +1,53 @@
-<div style="display: flex; align-items: center; justify-content: center; flex-direction: column; width: 100%;">
-    <h1>ufs</h1>
-    <h3>embed dirs & walk local dirs</h3>
-</div>
+<center>
+    <h1>UFS</h1>
+    <h4>Universal FS Tool</h4>
+</center>
 
-<div style="display: flex; align-items: center; justify-content: center; flex-direction: row; width: 100%; gap: 5px;">
-    <div style="display: flex; flex-direction: column; align-items: center; padding: 5px 10px; background: rgba(0, 0, 0, 0.1); border-radius: 5px;">
-        <b style="font-size: 12px; padding: 5px 10px;">ufs</b>
+<center>
+    <center style="line-height: 40px;">
+        <b>ufs</b>
         <a href="https://crates.io/crates/ufs">
             <img src="https://img.shields.io/crates/v/ufs?style=flat-square">
         </a>
-    </div>
-    <div style="display: flex; flex-direction: column; align-items: center; padding: 5px 10px; background: rgba(0, 0, 0, 0.1); border-radius: 5px;">
-        <b style="font-size: 12px; padding: 5px 10px;">ufs-macros</b>
+    </center>
+    <center style="line-height: 40px;">
+        <b>ufs-macros</b>
         <a href="https://crates.io/crates/ufs-macros" style="margin: 0; padding: 0;">
             <img src="https://img.shields.io/crates/v/ufs-macros?style=flat-square">
         </a>
-    </div>
-</div>
+    </center>
+</center>
 
-<br>
+<hr>
 
 **Extract Archives**
  + Endings Supported: `.7z` `.zip` `.tar` `.tar.gz` `.tgz` `.tar.xz` `.txz`
  + in terms of speed is the `tar` section the fastest.
 
+**Features**
+ + Embed `Dirs` and `Archives`
+ + Walk Local `Dirs` and `Archives`
+ + Parallel Walking via `rayon`
+
 <br>
 
 ### Examples
+
+<br>
+
+**`Features`**
+
+```toml
+default = []
+# Enable all
+all = ["7z", "zip", "tar", "txz", "tgz"]
+# Extensions
+7z   = ["dep:sevenz-rust2"]
+zip  = ["dep:zip"]
+tar  = ["dep:tar"]
+txz  = ["dep:tar", "dep:xz2"]
+tgz  = ["dep:tar", "dep:flate2"]
+```
 
 <br>
 

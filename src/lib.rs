@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 pub use ufs_macros::bind_dir;
 
@@ -18,25 +20,19 @@ pub use entry::FsEntry;
 
 
 
-pub struct UnifiedFS {
-    pub entries: Vec<FsEntry>,
+
+
+#[derive(Debug, Default)]
+pub struct UnifiedFS<'a> {
+    pub index: AtomicUsize,
+    pub entries: &'a [FsEntry],
 }
 
 
- 
-impl Default for UnifiedFS {
-    
-    fn default() -> Self {
-        Self {
-            entries: vec![],
-        }
-    }
-
-}
 
 
  
-impl<'a> UnifiedFS {
+impl<'a> UnifiedFS<'a> {
 
     pub fn new() -> Self {
         Self {
@@ -59,18 +55,15 @@ impl<'a> UnifiedFS {
 
 }
 
-
-
-
-
-impl<'a> IntoIterator for &'a UnifiedFS {
+impl<'a> Iterator for &'a UnifiedFS<'a> {
     type Item = &'a FsEntry;
-    type IntoIter = std::slice::Iter<'a, FsEntry>;
-    fn into_iter(self) -> Self::IntoIter {
-        self.entries.iter()
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = self.index.fetch_add(1, Ordering::Relaxed);
+        let item = self.entries.get(index)?;
+        Some(item)
     }
 }
-
 
 
 

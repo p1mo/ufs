@@ -37,7 +37,7 @@ pub static ARCHIVE_EXTS: &[&str] = &[ ".7z", ".zip", ".tar", ".tgz", ".txz", ".t
 
 
 
-
+#[derive(Debug)]
 enum AchiveType {
     Tar,
     TarGz,
@@ -128,6 +128,10 @@ impl<'a> ArchiveEntry<'a> {
         Ok(self.path.metadata()?)
     }
 
+    pub fn data(&mut self) -> Result<&'static [u8]> {
+        Ok(Box::leak(self.content()?.into_boxed_slice()))
+    }
+
     pub fn content(&mut self) -> Result<Vec<u8>> {
         match &self.reader {
             #[cfg(tar)]
@@ -204,6 +208,7 @@ enum ArchiveEntryReader<'a> {
 
 pub struct Archive {
     path: PathBuf,
+    total_files: usize,
     data: &'static [u8],
     kind: Option<AchiveType>,
 }
@@ -213,6 +218,7 @@ impl<'a> Archive {
     pub fn new<P: AsRef<Path>>(path: P, data: &'static [u8]) -> Self {
         Self {
             data: data,
+            total_files: 0,
             path: path.as_ref().to_path_buf(),
             kind: AchiveType::from_path(path.as_ref()),
         }
@@ -238,7 +244,7 @@ impl<'a> Archive {
         Ok(self.path.metadata()?)
     }
 
-    pub fn entries<F: FnMut(ArchiveEntry)>(&self, mut callback: F) -> Result<()> {
+    pub fn entries<F: FnMut(ArchiveEntry)>(&mut self, mut callback: F) -> Result<()> {
         #[cfg(tar)]
         if let Some(archive) = self.open().downcast_mut::<TarArchive<Cursor<&'static [u8]>>>() {
             for entry in archive.entries()?.flatten() {
@@ -271,19 +277,21 @@ impl<'a> Archive {
         }
         #[cfg(zip)]
         if let Some(archive) = self.open().downcast_mut::<ZipArchive<Cursor<&'static [u8]>>>() {
-            let len = archive.len();
-            for cur in 0..len {
+            self.total_files = archive.len();
+            for cur in 0..self.total_files {
                 let mut archive_entry = archive.clone();
                 if let Some(entry) = archive_entry.by_index(cur).ok() {
                     if !entry.is_dir() {
                         let size = entry.size();
-                        callback(self.create_archive_entry(entry.name(), size, ArchiveEntryReader::Zip { filename: entry.name(), reader: Arc::new(RwLock::new(archive)) }));
+                        let name = &entry.name()?;
+                        callback(self.create_archive_entry(name, size, ArchiveEntryReader::Zip { filename: name, reader: Arc::new(RwLock::new(archive)) }));
                     }
                 }
             }
         }
         #[cfg(sevenz)]
         if let Some(archive) = self.open().downcast_mut::<ArchiveReader<Cursor<&'static [u8]>>>() {
+            self.total_files = archive.archive().files.len();
             archive.for_each_entries(|entry, read| {
                 callback(self.create_archive_entry(&entry.name, entry.size, ArchiveEntryReader::Sevenz { reader: Arc::new(RwLock::new(read)) }));
                 Ok(true)
