@@ -5,7 +5,7 @@ use ufs::{ bind_dir, UnifiedFS, AchiveExt };
 fn main() -> anyhow::Result<()> {
 
     let fs1 = bind_dir!("examples/files");
-
+ 
     for item in fs1.iter() {
 
         println!("embed > {:?}", item.path);
