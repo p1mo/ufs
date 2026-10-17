@@ -23,16 +23,16 @@ pub use entry::FsEntry;
 
 
 #[derive(Debug, Default)]
-pub struct UnifiedFS<'a> {
+pub struct UnifiedFS {
     pub index: AtomicUsize,
-    pub entries: &'a [FsEntry],
+    pub entries: Vec<FsEntry>,
 }
 
 
 
 
  
-impl<'a> UnifiedFS<'a> {
+impl<'a> UnifiedFS {
 
     pub fn new() -> Self {
         Self {
@@ -55,7 +55,7 @@ impl<'a> UnifiedFS<'a> {
 
 }
 
-impl<'a> Iterator for &'a UnifiedFS<'a> {
+impl<'a> Iterator for &'a UnifiedFS {
     type Item = &'a FsEntry;
 
     fn next(&mut self) -> Option<Self::Item> {
