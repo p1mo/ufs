@@ -108,7 +108,7 @@ pub fn bind_dir(input: TokenStream) -> TokenStream {
         let size = *size;
         let depth = *depth;
         quote! {
-            ufs_core::Entry {
+            ufs_base::Entry {
                 size: #size,
                 depth: #depth,
                 filename: String::from(#filename),
@@ -122,7 +122,7 @@ pub fn bind_dir(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         {
-            ufs_core::Embeds::new(
+            ufs_base::Embeds::new(
                 [
                     #(#vec_entries),*
                 ].to_vec()

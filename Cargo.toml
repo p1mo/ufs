@@ -17,16 +17,16 @@ default = []
 
 archive-all = ["7z", "zip", "tar", "txz", "tgz"]
 
-7z   = ["ufs_core/7z"]
-zip  = ["ufs_core/zip"]
-tar  = ["ufs_core/tar"]
-txz  = ["ufs_core/txz"]
-tgz  = ["ufs_core/tgz"]
+7z   = ["ufs-base/7z"]
+zip  = ["ufs-base/zip"]
+tar  = ["ufs-base/tar"]
+txz  = ["ufs-base/txz"]
+tgz  = ["ufs-base/tgz"]
 
 
 
 [dependencies]
-ufs_core = { path = "ufs-core" }
+ufs-base = { path = "ufs-core" }
 ufs-macros = { path = "ufs-macros" }
 
 
