@@ -1,0 +1,40 @@
+[package]
+name = "ufs-core"
+version = "0.1.0"
+edition = "2024"
+
+description = "core for ufs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/p1mo/ufs/tree/main/ufs-core"
+readme = "README.md"
+keywords = ["http", "assets", "include", "embed", "dir", "games", "static", "web", "server"]
+categories = ["development-tools", "game-engines", "web-programming", "filesystem"]
+authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
+
+[features]
+default = []
+
+all = ["7z", "zip", "tar", "txz", "tgz"]
+
+7z   = ["dep:sevenz-rust2"]
+zip  = ["dep:zip"]
+tar  = ["dep:tar"]
+txz  = ["dep:tar", "dep:xz2"]
+tgz  = ["dep:tar", "dep:flate2"]
+
+
+[build-dependencies]
+cfg_aliases = "0.2.2"
+
+
+[dependencies]
+serde_json = "1.0.154"
+serde = { version = "1.0.229", features = ["derive"] }
+
+thiserror = "2.0.21"
+
+zip = { version = "9.0.4", optional = true }
+tar = { version = "0.4.46", optional = true }
+flate2 = { version = "1.1.10", optional = true }
+xz2 = { version = "0.1.7", optional = true }
+sevenz-rust2 = { version = "0.25.0", optional = true }
