@@ -26,8 +26,8 @@ tgz  = ["ufs-base/tgz"]
 
 
 [dependencies]
-ufs-base = { path = "ufs-core" }
-ufs-macros = { path = "ufs-macros" }
+ufs-base = { version = "0.1.0", path = "ufs-core" }
+ufs-macros = { version = "0.1.4", path = "ufs-macros" }
 
 
 

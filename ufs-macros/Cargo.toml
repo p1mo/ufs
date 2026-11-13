@@ -16,7 +16,7 @@ proc-macro = true
 path = "src/lib.rs"
 
 [dependencies]
-ufs-base = { path = "../ufs-core" }
+ufs-base = { version = "0.1.0", path = "../ufs-core" }
 
 proc-macro2 = "1.0.106"
 quote = "1.0.45"
