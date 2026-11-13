@@ -1,4 +1,4 @@
-use ufs::{ Bind, Embeds, Entry, Statics, UFS, bind_dir };
+use ufs::{ Bind, Statics, UFS, bind_dir };
 
 #[derive(PartialEq)]
 pub enum MYFiles {

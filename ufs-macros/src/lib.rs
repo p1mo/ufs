@@ -3,8 +3,6 @@ use quote::quote;
 use proc_macro::TokenStream;
 use syn::{LitBool, LitStr, Token, parse::{Parse, ParseStream}, parse_macro_input};
 
-use ufs_core::{ Embeds, Entry };
-
 struct FsInput {
     path: LitStr,
     read: Option<LitBool>,
@@ -110,7 +108,7 @@ pub fn bind_dir(input: TokenStream) -> TokenStream {
         let size = *size;
         let depth = *depth;
         quote! {
-            Entry {
+            ufs_core::Entry {
                 size: #size,
                 depth: #depth,
                 filename: String::from(#filename),
@@ -124,7 +122,7 @@ pub fn bind_dir(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         {
-            Embeds::new(
+            ufs_core::Embeds::new(
                 [
                     #(#vec_entries),*
                 ].to_vec()
