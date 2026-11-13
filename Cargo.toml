@@ -6,7 +6,7 @@ description = "ufs embed files and read from disk"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/p1mo/ufs"
 readme = "README.md"
-keywords = ["http", "assets", "include", "embed", "dir", "games", "static", "web", "server"]
+keywords = ["include", "embed", "dir", "static", "server"]
 categories = ["development-tools", "game-engines", "web-programming", "filesystem"]
 authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
 
