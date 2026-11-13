@@ -1,17 +1,11 @@
-use super::Result;
-
-
 use std::path::PathBuf;
 
 
 
 
 
-
-
-
 #[derive(Debug, Clone)]
-pub struct FsEntry {
+pub struct Entry {
     pub size: u64,
     pub depth: usize,
     pub path: PathBuf,
@@ -19,13 +13,13 @@ pub struct FsEntry {
     pub content: Option<&'static [u8]>,
 }
 
-impl FsEntry {
+impl Entry {
     
     pub fn is_absolute(&self) -> bool {
         self.path.is_absolute()
     }
     
-    pub fn metadata(&self) -> Result<std::fs::Metadata> {
+    pub fn metadata(&self) -> Result<std::fs::Metadata, crate::Error> {
         Ok(self.path.metadata()?)
     }
 
@@ -36,7 +30,7 @@ impl FsEntry {
         false
     }
 
-    pub fn content(&self) -> Result<&'static [u8]> {
+    pub fn content(&self) -> Result<&'static [u8], crate::Error> {
         if !self.is_local() {
             return Ok(self.content.unwrap());
         } 

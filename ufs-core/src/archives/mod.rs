@@ -1,7 +1,3 @@
-use crate::Result;
-use crate::FsEntry;
-
-
 use std::any::Any;
 use std::io::Cursor;
 use std::io::Read;
@@ -9,6 +5,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::RwLock;
+
+
+use crate::{Entry, Error};
 
 
 
@@ -39,9 +38,13 @@ pub static ARCHIVE_EXTS: &[&str] = &[ ".7z", ".zip", ".tar", ".tgz", ".txz", ".t
 
 #[derive(Debug)]
 enum AchiveType {
+    #[cfg(tar)]
     Tar,
+    #[cfg(tgz)]
     TarGz,
+    #[cfg(txz)]
     TarXz,
+    #[cfg(zip)]
     Zip,
     #[cfg(sevenz)]
     SevenZ
@@ -51,24 +54,37 @@ enum AchiveType {
 impl AchiveType {
 
     pub fn from_path<P: AsRef<Path>>(path: P) -> Option<AchiveType> {
+
+        #[cfg(any(tar, tgz, txz, zip, sevenz))]
         let path = path.as_ref().to_str().unwrap();
+
+        #[cfg(tar)]
         if path.ends_with(".tar") {
             return Some(AchiveType::Tar);
         }
+
+        #[cfg(tgz)]
         if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
             return Some(AchiveType::TarGz);
         }
+
+        #[cfg(txz)]
         if path.ends_with(".tar.xz") || path.ends_with(".txz") {
             return Some(AchiveType::TarXz);
         }
+
+        #[cfg(zip)]
         if path.ends_with(".zip") {
             return Some(AchiveType::Zip);
         }
+
         #[cfg(sevenz)]
         if path.ends_with(".7z") {
             return Some(AchiveType::SevenZ);
         }
+
         None
+
     }
     
 }
@@ -78,12 +94,14 @@ impl AchiveType {
 
 
 
+#[cfg(any(tar, tgz, txz, zip, sevenz))]
 pub trait AchiveExt {
     fn is_archive(&self) -> bool;
-    fn archive(&self) -> Result<Archive>;
+    fn archive(&self) -> Result<Archive, Error>;
 }
 
-impl AchiveExt for FsEntry {
+impl AchiveExt for Entry {
+
     fn is_archive(&self) -> bool {
         for ext in ARCHIVE_EXTS.iter() {
             if self.path.to_str().unwrap().ends_with(ext) {
@@ -93,15 +111,14 @@ impl AchiveExt for FsEntry {
         false
     }
 
-    fn archive(&self) -> Result<Archive> {
+    fn archive(&self) -> Result<Archive, Error> {
         if !self.is_archive() {
             return Err(crate::Error::Unknown(format!("archive or feature is not active could not open: {}", self.path.display().to_string())))
         }
         Ok(Archive::new(self.path.as_path(), self.content()?))
     }
+
 }
-
-
 
 
 
@@ -124,15 +141,15 @@ impl<'a> ArchiveEntry<'a> {
         self.path.display().to_string()
     }
 
-    pub fn metadata(&self) -> Result<std::fs::Metadata> {
+    pub fn metadata(&self) -> Result<std::fs::Metadata, Error> {
         Ok(self.path.metadata()?)
     }
 
-    pub fn data(&mut self) -> Result<&'static [u8]> {
+    pub fn data(&mut self) -> Result<&'static [u8], Error> {
         Ok(Box::leak(self.content()?.into_boxed_slice()))
     }
 
-    pub fn content(&mut self) -> Result<Vec<u8>> {
+    pub fn content(&mut self) -> Result<Vec<u8>, Error> {
         match &self.reader {
             #[cfg(tar)]
             ArchiveEntryReader::Tar { reader } => {
@@ -240,11 +257,11 @@ impl<'a> Archive {
         }
     }
 
-    pub fn metadata(&self) -> Result<std::fs::Metadata> {
+    pub fn metadata(&self) -> Result<std::fs::Metadata, Error> {
         Ok(self.path.metadata()?)
     }
 
-    pub fn entries<F: FnMut(ArchiveEntry)>(&mut self, mut callback: F) -> Result<()> {
+    pub fn entries<F: FnMut(ArchiveEntry)>(&mut self, mut callback: F) -> Result<(), Error> {
         #[cfg(tar)]
         if let Some(archive) = self.open().downcast_mut::<TarArchive<Cursor<&'static [u8]>>>() {
             for entry in archive.entries()?.flatten() {
