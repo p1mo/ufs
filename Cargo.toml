@@ -1,35 +1,22 @@
 [package]
 name = "ufs"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
-description = "ufs embed files and read from disk"
+rust-version = "1.85"
+description = "Embed a directory at compile time or walk it at runtime, with optional built-in compression."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/p1mo/ufs"
 readme = "README.md"
-keywords = ["include", "embed", "dir", "static", "server"]
-categories = ["development-tools", "game-engines", "web-programming", "filesystem"]
+keywords = ["include", "embed", "dir", "static", "compression"]
+categories = ["filesystem", "compression", "development-tools"]
 authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
 
-
-
-[features]
-default = []
-
-archive-all = ["7z", "zip", "tar", "txz", "tgz"]
-
-7z   = ["ufs-base/7z"]
-zip  = ["ufs-base/zip"]
-tar  = ["ufs-base/tar"]
-txz  = ["ufs-base/txz"]
-tgz  = ["ufs-base/tgz"]
-
-
-
 [dependencies]
-ufs-base = { version = "0.1.0", path = "ufs-base" }
-ufs-macros = { version = "0.1.4", path = "ufs-macros" }
+ufs-macros = { version = "0.1.5", path = "ufs-macros" }
 
-
+[workspace]
+members = [".", "ufs-macros"]
+resolver = "2"
 
 [[example]]
 name = "basic"
