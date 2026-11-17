@@ -1,5 +1,6 @@
-IGNORE = -i temp/ -i target/
+.PHONY: test example
+test:
+	cargo test --workspace --all-targets
 
-.PHONY: dev
-dev:
-	cargo watch $(IGNORE) --clear -x 'run --example basic'
+example:
+	cargo run --example basic
