@@ -73,6 +73,11 @@ Potential benefits:
 ## Macro Improvements
 - [ ] Make all macro arguments optional, except for `path`, which must remain required.
 
+## Configurable Macro Limits
+- [ ] Make all hardcoded limits inside macros configurable and overridable by the user.
+- [ ] Allow users to adjust internal limits through optional macro arguments or configuration options.
+- [ ] Keep sensible default values while allowing users to customize them without modifying the library source code.
+
 ## Remote Filesystem Reading
 - [ ] Add optional remote filesystem support for reading arbitrary files, not just archives.
 - [ ] Evaluate **Apache OpenDAL (`opendal = "0.59.5"`)** as the unified remote storage backend.
