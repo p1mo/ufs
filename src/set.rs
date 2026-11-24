@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::{Entry, Error, Statics};
 
 /// Files from `bind_dir!`, a disk walk, one embedded buffer, or an archive.
@@ -80,6 +82,14 @@ impl UFS {
         self.entries.iter()
     }
 
+    /// Parallel iterator over the same entries as [`UFS::iter`].
+    ///
+    /// Collected results keep index order. `Entry` is `Sync`, so `content()`
+    /// and other shared methods are safe to call from the pool.
+    pub fn par_iter(&self) -> rayon::slice::Iter<'_, Entry> {
+        self.entries.par_iter()
+    }
+
     /// Find an entry by its stored path.
     ///
     /// Embedded paths use `/` and compare equal. Archive members use the full
@@ -97,29 +107,9 @@ impl UFS {
     /// Read every file, in order.
     ///
     /// Embedded and owned bytes are borrowed. Disk reads and decompression run
-    /// in parallel, up to one worker per CPU, and only those results allocate.
+    /// on the rayon pool. Only those results allocate.
     pub fn read_all(&self) -> Result<Vec<Cow<'_, [u8]>>, Error> {
-        let heavy: Vec<usize> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| entry.is_local() || entry.is_compressed())
-            .map(|(index, _)| index)
-            .collect();
-        if heavy.is_empty() {
-            return self.entries.iter().map(Entry::content).collect();
-        }
-        let loaded = load_heavy(&self.entries, &heavy)?;
-        let mut loaded = loaded.into_iter();
-        let mut out = Vec::with_capacity(self.entries.len());
-        for (index, entry) in self.entries.iter().enumerate() {
-            if heavy.binary_search(&index).is_ok() {
-                out.push(Cow::Owned(loaded.next().expect("heavy read")));
-            } else {
-                out.push(entry.content()?);
-            }
-        }
-        Ok(out)
+        self.par_iter().map(Entry::content).collect()
     }
 
     /// Open every archive entry in parallel.
@@ -127,13 +117,16 @@ impl UFS {
     /// When `keep` is set, the archive file stays in front of its members.
     /// Other files are left where they are.
     pub fn expand_archives(&mut self, keep: bool) -> Result<(), Error> {
-        let opened = parallel_map(&self.entries, |entry| {
-            if entry.is_archive() {
-                Ok(Some(entry.archive()?))
-            } else {
-                Ok(None)
-            }
-        })?;
+        let opened = self
+            .par_iter()
+            .map(|entry| {
+                if entry.is_archive() {
+                    Ok(Some(entry.archive()?))
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         let mut entries = Vec::with_capacity(self.entries.len());
         for (entry, files) in self.entries.drain(..).zip(opened) {
             match files {
@@ -151,69 +144,22 @@ impl UFS {
     }
 }
 
-fn load_heavy(entries: &[Entry], heavy: &[usize]) -> Result<Vec<Vec<u8>>, Error> {
-    if heavy.len() <= 1 {
-        return heavy
-            .iter()
-            .map(|&index| Ok(entries[index].content()?.into_owned()))
-            .collect();
+impl<'a> IntoParallelIterator for &'a UFS {
+    type Item = &'a Entry;
+    type Iter = rayon::slice::Iter<'a, Entry>;
+
+    fn into_par_iter(self) -> Self::Iter {
+        self.par_iter()
     }
-    let workers = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1)
-        .clamp(1, heavy.len());
-    let chunk = heavy.len().div_ceil(workers);
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for start in (0..heavy.len()).step_by(chunk) {
-            let end = (start + chunk).min(heavy.len());
-            let indexes = &heavy[start..end];
-            handles.push(scope.spawn(move || {
-                indexes
-                    .iter()
-                    .map(|&index| Ok(entries[index].content()?.into_owned()))
-                    .collect::<Result<Vec<_>, Error>>()
-            }));
-        }
-        let mut out = Vec::with_capacity(heavy.len());
-        for handle in handles {
-            out.extend(handle.join().expect("read panicked")?);
-        }
-        Ok(out)
-    })
 }
 
-fn parallel_map<T, R>(
-    items: &[T],
-    map: impl Fn(&T) -> Result<R, Error> + Sync + Send,
-) -> Result<Vec<R>, Error>
-where
-    T: Sync,
-    R: Send,
-{
-    let n = items.len();
-    if n <= 1 {
-        return items.iter().map(&map).collect();
+impl IntoParallelIterator for UFS {
+    type Item = Entry;
+    type Iter = rayon::vec::IntoIter<Entry>;
+
+    fn into_par_iter(self) -> Self::Iter {
+        self.entries.into_par_iter()
     }
-    let workers = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1)
-        .clamp(1, n);
-    let chunk = n.div_ceil(workers);
-    let map = &map;
-    std::thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for start in (0..n).step_by(chunk) {
-            let end = (start + chunk).min(n);
-            let slice = &items[start..end];
-            handles.push(scope.spawn(move || slice.iter().map(map).collect::<Result<Vec<_>, _>>()));
-        }
-        let mut out = Vec::with_capacity(n);
-        for handle in handles {
-            out.extend(handle.join().expect("worker panicked")?);
-        }
-        Ok(out)
-    })
 }
 
 impl<'a> IntoIterator for &'a UFS {
@@ -282,6 +228,11 @@ mod tests {
 
         let mut all = note;
         all.append(owned);
+        let names: Vec<_> = all
+            .par_iter()
+            .map(|entry| entry.filename.as_str())
+            .collect();
+        assert_eq!(names, ["note.txt", "scratch.txt"]);
         let bytes = all.read_all().unwrap();
         assert_eq!(bytes[0].as_ref(), b"hello");
         assert_eq!(bytes[1].as_ref(), b"owned");

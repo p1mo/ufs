@@ -15,8 +15,8 @@ authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
 proc-macro = true
 
 [dependencies]
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-lzma-rs = "0.3"
-sevenz-rust2 = { version = "0.24", features = ["compress"] }
-tar = "0.4"
-zip = "2"
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+lzma-rs = "0.3.0"
+sevenz-rust2 = { version = "0.25.0", features = ["compress"] }
+tar = "0.4.46"
+zip = "9.8.2"

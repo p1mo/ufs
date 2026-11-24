@@ -2,6 +2,8 @@ use std::collections::VecDeque;
 use std::fs::ReadDir;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
+
 use crate::{Entry, Error};
 
 /// Stop a walk that is nested far deeper than real asset trees.
@@ -129,17 +131,10 @@ fn collect_parallel(root: &Path) -> Result<Vec<Entry>, Error> {
         files.extend(collect_sync(root, &dirs[0], 1)?);
         return capped(files);
     }
-    let nested = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(dirs.len());
-        for dir in &dirs {
-            handles.push(scope.spawn(|| collect_sync(root, dir, 1)));
-        }
-        let mut nested = Vec::with_capacity(dirs.len());
-        for handle in handles {
-            nested.push(handle.join().expect("directory walk panicked")?);
-        }
-        Ok::<_, Error>(nested)
-    })?;
+    let nested = dirs
+        .par_iter()
+        .map(|dir| collect_sync(root, dir, 1))
+        .collect::<Result<Vec<_>, Error>>()?;
     for group in nested {
         files.extend(group);
     }
