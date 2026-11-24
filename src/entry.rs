@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::PathBuf;
 
 use crate::error::Error;
+use crate::set::UFS;
 
 /// Largest file [`Entry::content`] will read from disk in one call.
 pub const MAX_DISK_READ: u64 = 512 * 1024 * 1024;
@@ -17,6 +18,8 @@ enum Source {
     Disk,
     /// Discovered at compile time with `read = false`.
     Omitted,
+    /// Bytes owned by this entry. Used for archive members.
+    Owned(Vec<u8>),
 }
 
 /// One file, either embedded at compile time or found on disk.
@@ -89,6 +92,76 @@ impl Entry {
         }
     }
 
+    /// Owned bytes with the same interface as [`Entry::embedded`].
+    ///
+    /// Use this when the buffer is not `'static`: a user struct, a decoded
+    /// archive member, or anything else built at runtime.
+    pub fn bytes(relative: &str, bytes: Vec<u8>) -> Self {
+        let (path, filename, depth) = split_relative(relative);
+        let size = bytes.len() as u64;
+        Self {
+            size,
+            depth,
+            path,
+            filename,
+            source: Source::Owned(bytes),
+        }
+    }
+
+    pub(crate) fn owned(path: PathBuf, depth: usize, bytes: Vec<u8>) -> Self {
+        let filename = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let size = bytes.len() as u64;
+        Self {
+            size,
+            depth,
+            path,
+            filename,
+            source: Source::Owned(bytes),
+        }
+    }
+
+    /// `true` when the file name or payload looks like zip, tar, tar.gz, tar.xz, or 7z.
+    pub fn is_archive(&self) -> bool {
+        if crate::archive::is_archive_name(&self.filename) {
+            return true;
+        }
+        match &self.source {
+            Source::Bytes(bytes) => crate::archive::is_archive_bytes(bytes),
+            Source::Owned(bytes) => crate::archive::is_archive_bytes(bytes),
+            Source::Disk => sniff_disk(&self.path),
+            Source::Compressed(_) | Source::Omitted => false,
+        }
+    }
+
+    /// Read this entry as an archive. Members are ordinary [`Entry`] values in a [`UFS`].
+    ///
+    /// Paths look like `{archive}/{path inside}`. Nested archives are expanded
+    /// up to 8 levels. The archive file itself is not in the returned list;
+    /// [`UFS::archive`] keeps it, and so does `archive_entry = true`.
+    pub fn archive(&self) -> Result<UFS, Error> {
+        if !self.is_archive() {
+            return Err(Error::Archive(format!(
+                "{} is not an archive",
+                self.path.display()
+            )));
+        }
+        let bytes = self.content()?;
+        let nodes = crate::archive::expand(bytes.as_ref(), &self.filename, false)
+            .map_err(Error::Archive)?;
+        let entries = nodes
+            .into_iter()
+            .map(|node| {
+                let path = PathBuf::from(format!("{}/{}", self.path.display(), node.path));
+                let depth = self.depth + 1 + node.path.matches('/').count();
+                Entry::owned(path, depth, node.bytes)
+            })
+            .collect();
+        Ok(UFS::from_entries(entries))
+    }
+
     /// `true` when the bytes live on disk and are read by [`Entry::content`].
     pub fn is_local(&self) -> bool {
         matches!(self.source, Source::Disk)
@@ -126,17 +199,21 @@ impl Entry {
 
     /// File bytes.
     ///
-    /// Uncompressed embeds borrow the binary (`Cow::Borrowed`). Compressed
-    /// embeds and on-disk files return `Cow::Owned`. On-disk reads do not
-    /// follow symlinks and refuse files larger than [`MAX_DISK_READ`].
-    pub fn content(&self) -> Result<Cow<'static, [u8]>, Error> {
-        match self.source {
+    /// Uncompressed embeds and owned buffers are borrowed (`Cow::Borrowed`).
+    /// Nothing is copied and nothing is leaked. Compressed embeds and on-disk
+    /// files return `Cow::Owned` because those bytes are produced on the call.
+    /// On-disk reads do not follow symlinks and refuse files larger than
+    /// [`MAX_DISK_READ`].
+    pub fn content(&self) -> Result<Cow<'_, [u8]>, Error> {
+        match &self.source {
             Source::Bytes(bytes) => Ok(Cow::Borrowed(bytes)),
+            Source::Owned(bytes) => Ok(Cow::Borrowed(bytes)),
             Source::Compressed(bytes) => {
-                let out = crate::compress::decompress(bytes).map_err(Error::Decompress)?;
-                if out.len() as u64 != self.size {
+                let declared = crate::compress::payload_len(bytes).map_err(Error::Decompress)?;
+                if declared as u64 != self.size {
                     return Err(Error::Decompress("decompressed size does not match entry"));
                 }
+                let out = crate::compress::decompress(bytes).map_err(Error::Decompress)?;
                 Ok(Cow::Owned(out))
             }
             Source::Omitted => Err(Error::MissingContent),
@@ -164,6 +241,8 @@ impl Entry {
         }
         let mut file = open_nofollow(&self.path)?;
         let mut buf = Vec::new();
+        buf.try_reserve(meta.len() as usize)
+            .map_err(|_| Error::Limit("file exceeds the 512 MiB read limit"))?;
         file.by_ref().take(meta.len()).read_to_end(&mut buf)?;
         Ok(buf)
     }
@@ -192,6 +271,18 @@ fn open_nofollow(path: &std::path::Path) -> Result<std::fs::File, Error> {
     options.open(path).map_err(Error::from)
 }
 
+fn sniff_disk(path: &std::path::Path) -> bool {
+    let mut file = match open_nofollow(path) {
+        Ok(file) => file,
+        Err(_) => return false,
+    };
+    let mut buf = [0u8; 262];
+    let Ok(read) = file.read(&mut buf) else {
+        return false;
+    };
+    crate::archive::is_archive_bytes(&buf[..read])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,8 +304,8 @@ mod tests {
     #[test]
     fn compressed_roundtrip_and_reject() {
         let raw = b"aaaaaaa-aaaaaaa-aaaaaaa";
-        let blob = crate::compress(raw).unwrap();
-        let blob: &'static [u8] = Box::leak(blob.into_boxed_slice());
+        static BLOB: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+        let blob = BLOB.get_or_init(|| crate::compress(raw).unwrap());
         let entry = Entry::compressed("a.txt", raw.len() as u64, blob);
         assert!(entry.is_compressed());
         assert_eq!(entry.content().unwrap().as_ref(), raw);

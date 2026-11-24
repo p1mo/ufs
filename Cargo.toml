@@ -1,9 +1,9 @@
 [package]
 name = "ufs"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 rust-version = "1.85"
-description = "Embed a directory at compile time or walk it at runtime, with optional built-in compression."
+description = "Embed a directory or walk it at runtime, with optional compression and zip/tar/7z reading."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/p1mo/ufs"
 readme = "README.md"
@@ -12,7 +12,12 @@ categories = ["filesystem", "compression", "development-tools"]
 authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
 
 [dependencies]
-ufs-macros = { version = "0.1.5", path = "ufs-macros" }
+ufs-macros = { version = "0.4.0", path = "ufs-macros" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lzma-rs = "0.3"
+sevenz-rust2 = { version = "0.24", features = ["compress"] }
+tar = "0.4"
+zip = "2"
 
 [workspace]
 members = [".", "ufs-macros"]

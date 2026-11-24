@@ -1,11 +1,15 @@
-//! `bind_dir!` implementation. No third-party crates: tokens are parsed by hand
-//! and the generated Rust is spliced back onto the caller's `$crate` ident.
+//! `bind_dir!` implementation. Tokens are parsed by hand and the generated Rust
+//! is spliced back onto the caller's `$crate` ident. Archive bytes are expanded
+//! with the shared `src/archive.rs` when `archives = true`.
 
 #![forbid(unsafe_code)]
 
 use proc_macro::{Group, Ident, TokenStream, TokenTree};
 use std::path::{Component, Path, PathBuf};
 
+#[path = "../../src/archive.rs"]
+mod archive;
+#[path = "../../src/compress.rs"]
 mod compress;
 
 const MAX_FILES: usize = 100_000;
@@ -17,7 +21,10 @@ struct Args {
     read: bool,
     root: bool,
     absolute: bool,
-    compress: bool,
+    /// `None` stores the file as-is. A level is optional; the decoder does not care which one was used.
+    compress: Option<compress::Level>,
+    archives: bool,
+    archive_entry: bool,
 }
 
 struct Asset {
@@ -29,9 +36,13 @@ struct Asset {
 enum Payload {
     /// `include_bytes!` of the original file.
     Raw,
-    /// `include_bytes!` of a ULZ1 blob in the Cargo target dir.
-    Compressed { cache: PathBuf },
-    /// Path and size only. The original file is still tracked.
+    /// Uncompressed bytes that are not a source file (an archive member).
+    /// Emitted as a byte-string literal, not a cache file.
+    Literal(Vec<u8>),
+    /// ULZ1 bytes emitted as a byte-string literal.
+    Compressed(Vec<u8>),
+    /// Path and size only. The original file is tracked with `include_bytes!`
+    /// but its bytes are not referenced, so a release build can drop them.
     Omitted,
 }
 
@@ -40,10 +51,14 @@ struct Planned {
     size: u64,
     absolute: PathBuf,
     payload: Payload,
+    /// Extra file to `include_bytes!` so Cargo rebuilds when an archive changes
+    /// even if only its members are embedded.
+    extra_track: Option<PathBuf>,
 }
 
-/// Embed a directory. Call this through the `bind_dir!` macro exported by `ufs`,
-/// which supplies the `$crate` marker this parser expects.
+/// Embed a directory. Prefer [`ufs::bind_dir`](https://docs.rs/ufs), which documents
+/// every option: `read`, `root`, `absolute`, `compress` (`fast`, `balanced`, `max`),
+/// `archives`, and `archive_entry`. All of them are optional. `..` is a normal path.
 #[proc_macro]
 pub fn bind_dir_impl(input: TokenStream) -> TokenStream {
     match expand(input) {
@@ -55,8 +70,11 @@ pub fn bind_dir_impl(input: TokenStream) -> TokenStream {
 fn expand(input: TokenStream) -> Result<TokenStream, String> {
     let (krate, rest) = split_krate(input)?;
     let args = parse_args(&rest)?;
-    if args.compress && !args.read {
-        return Err("compress = true requires read = true".into());
+    if args.compress.is_some() && !args.read {
+        return Err("compress requires read = true".into());
+    }
+    if args.archives && !args.read {
+        return Err("archives = true requires read = true".into());
     }
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())?;
@@ -77,7 +95,13 @@ fn expand(input: TokenStream) -> Result<TokenStream, String> {
             }
         }
     }
-    let planned = plan(&manifest, &assets, args.read, args.compress)?;
+    let planned = plan(
+        &assets,
+        args.read,
+        args.compress,
+        args.archives,
+        args.archive_entry,
+    )?;
     let body = render(&planned);
     splice_crate(&krate, &body)
 }
@@ -121,8 +145,10 @@ fn parse_args(input: &str) -> Result<Args, String> {
     let mut read = true;
     let mut root = false;
     let mut absolute = false;
-    let mut compress = false;
-    let mut seen = [false; 4];
+    let mut compress = None;
+    let mut archives = false;
+    let mut archive_entry = true;
+    let mut seen = [false; 6];
     while !rest.is_empty() {
         if !rest.starts_with(',') {
             return Err(format!("expected ',' before `{rest}`"));
@@ -137,8 +163,16 @@ fn parse_args(input: &str) -> Result<Args, String> {
             return Err(format!("expected '=' after {key}"));
         }
         rest = rest[1..].trim_start();
-        let (value, after_value) = take_ident(rest)?;
+        let (value, after_value) = take_value(rest)?;
         rest = after_value.trim_start();
+        if key == "compress" {
+            if seen[3] {
+                return Err("duplicate option `compress`".into());
+            }
+            seen[3] = true;
+            compress = parse_compress(&value)?;
+            continue;
+        }
         let flag = match value.as_str() {
             "true" => true,
             "false" => false,
@@ -148,7 +182,8 @@ fn parse_args(input: &str) -> Result<Args, String> {
             "read" => 0,
             "root" => 1,
             "absolute" => 2,
-            "compress" => 3,
+            "archives" => 4,
+            "archive_entry" => 5,
             other => return Err(format!("unknown option `{other}`")),
         };
         if seen[slot] {
@@ -159,7 +194,8 @@ fn parse_args(input: &str) -> Result<Args, String> {
             0 => read = flag,
             1 => root = flag,
             2 => absolute = flag,
-            3 => compress = flag,
+            4 => archives = flag,
+            5 => archive_entry = flag,
             _ => {}
         }
     }
@@ -169,6 +205,8 @@ fn parse_args(input: &str) -> Result<Args, String> {
         root,
         absolute,
         compress,
+        archives,
+        archive_entry,
     })
 }
 
@@ -271,6 +309,27 @@ fn take_ident(input: &str) -> Result<(String, &str), String> {
     Ok((input[..end].to_string(), &input[end..]))
 }
 
+fn take_value(input: &str) -> Result<(String, &str), String> {
+    let input = input.trim_start();
+    if input.starts_with('"') || input.starts_with('r') {
+        take_string(input)
+    } else {
+        take_ident(input)
+    }
+}
+
+fn parse_compress(value: &str) -> Result<Option<compress::Level>, String> {
+    match value {
+        "false" | "off" | "none" => Ok(None),
+        "true" | "balanced" | "default" => Ok(Some(compress::Level::Balanced)),
+        "fast" | "min" => Ok(Some(compress::Level::Fast)),
+        "max" | "best" | "high" => Ok(Some(compress::Level::Max)),
+        other => Err(format!(
+            "unknown compress level `{other}` (expected false, fast, balanced, or max)"
+        )),
+    }
+}
+
 fn resolve_root(manifest: &Path, requested: &str, absolute: bool) -> Result<PathBuf, String> {
     if requested.contains('\0') {
         return Err("directory path contains a NUL byte".into());
@@ -309,12 +368,6 @@ fn resolve_root(manifest: &Path, requested: &str, absolute: bool) -> Result<Path
             "refusing to embed the crate root; choose a subdirectory, or pass absolute = true"
                 .into(),
         );
-    }
-    if !absolute && !root.starts_with(&manifest_canon) {
-        return Err(format!(
-            "{requested} escapes the crate directory {}; pass absolute = true to allow that",
-            manifest_canon.display()
-        ));
     }
     let target = canonical_if_exists(&target_dir(manifest));
     if root.starts_with(&target) {
@@ -412,12 +465,14 @@ fn relative_path(root: &Path, file: &Path, with_root: bool) -> Result<String, St
 }
 
 fn plan(
-    manifest: &Path,
     assets: &[Asset],
     read: bool,
-    compress_files: bool,
+    compress: Option<compress::Level>,
+    archives: bool,
+    archive_entry: bool,
 ) -> Result<Vec<Planned>, String> {
     let mut planned = Vec::with_capacity(assets.len());
+    let mut pending = Vec::new();
     let mut total = 0u64;
     for asset in assets {
         if !read {
@@ -426,33 +481,122 @@ fn plan(
                 size: asset.size,
                 absolute: asset.absolute.clone(),
                 payload: Payload::Omitted,
+                extra_track: None,
             });
             continue;
         }
         let bytes = read_regular(&asset.absolute)?;
-        total = total.saturating_add(bytes.len() as u64);
-        if total > MAX_TOTAL {
-            return Err("embedded files exceed the 256 MiB limit".into());
+        let looks_archive =
+            archive::is_archive_name(&asset.relative) || archive::is_archive_bytes(&bytes);
+        if archives && looks_archive {
+            let nodes = archive::expand(&bytes, &asset.relative, archive_entry)?;
+            if archive_entry {
+                queue(
+                    &mut pending,
+                    &mut total,
+                    &asset.relative,
+                    bytes,
+                    Some(asset.absolute.clone()),
+                    None,
+                )?;
+            }
+            for node in nodes {
+                let relative = format!("{}/{}", asset.relative, node.path);
+                let track = if archive_entry {
+                    None
+                } else {
+                    Some(asset.absolute.clone())
+                };
+                queue(&mut pending, &mut total, &relative, node.bytes, None, track)?;
+            }
+            continue;
         }
-        if compress_files {
-            let blob = compress::compress(&bytes).map_err(str::to_string)?;
-            if blob.len() < bytes.len() {
-                let cache = cache_file(manifest, &asset.relative, &blob)?;
+        queue(
+            &mut pending,
+            &mut total,
+            &asset.relative,
+            bytes,
+            Some(asset.absolute.clone()),
+            None,
+        )?;
+    }
+    planned.extend(finish(compress, pending)?);
+    Ok(planned)
+}
+
+struct Pending {
+    relative: String,
+    bytes: Vec<u8>,
+    original: Option<PathBuf>,
+    extra_track: Option<PathBuf>,
+}
+
+fn queue(
+    pending: &mut Vec<Pending>,
+    total: &mut u64,
+    relative: &str,
+    bytes: Vec<u8>,
+    original: Option<PathBuf>,
+    extra_track: Option<PathBuf>,
+) -> Result<(), String> {
+    if bytes.len() as u64 > compress::MAX_UNCOMPRESSED as u64 {
+        return Err(format!(
+            "{relative} exceeds the 64 MiB embed limit ({} bytes)",
+            bytes.len()
+        ));
+    }
+    *total = total.saturating_add(bytes.len() as u64);
+    if *total > MAX_TOTAL {
+        return Err("embedded files exceed the 256 MiB limit".into());
+    }
+    pending.push(Pending {
+        relative: relative.to_string(),
+        bytes,
+        original,
+        extra_track,
+    });
+    Ok(())
+}
+
+fn finish(level: Option<compress::Level>, pending: Vec<Pending>) -> Result<Vec<Planned>, String> {
+    let mut blobs = if let Some(level) = level {
+        let inputs: Vec<&[u8]> = pending.iter().map(|item| item.bytes.as_slice()).collect();
+        Some(compress::compress_many(&inputs, level).map_err(str::to_string)?)
+    } else {
+        None
+    };
+    let mut planned = Vec::with_capacity(pending.len());
+    for (index, item) in pending.into_iter().enumerate() {
+        if let Some(blobs) = blobs.as_mut() {
+            let blob = std::mem::take(&mut blobs[index]);
+            if blob.len() < item.bytes.len() {
                 planned.push(Planned {
-                    relative: asset.relative.clone(),
-                    size: bytes.len() as u64,
-                    absolute: asset.absolute.clone(),
-                    payload: Payload::Compressed { cache },
+                    relative: item.relative,
+                    size: item.bytes.len() as u64,
+                    absolute: item.original.unwrap_or_default(),
+                    payload: Payload::Compressed(blob),
+                    extra_track: item.extra_track,
                 });
                 continue;
             }
         }
-        planned.push(Planned {
-            relative: asset.relative.clone(),
-            size: bytes.len() as u64,
-            absolute: asset.absolute.clone(),
-            payload: Payload::Raw,
-        });
+        if let Some(path) = item.original {
+            planned.push(Planned {
+                relative: item.relative,
+                size: item.bytes.len() as u64,
+                absolute: path,
+                payload: Payload::Raw,
+                extra_track: item.extra_track,
+            });
+        } else {
+            planned.push(Planned {
+                relative: item.relative,
+                size: item.bytes.len() as u64,
+                absolute: PathBuf::new(),
+                payload: Payload::Literal(item.bytes),
+                extra_track: item.extra_track,
+            });
+        }
     }
     Ok(planned)
 }
@@ -473,39 +617,6 @@ fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|err| format!("cannot read {}: {err}", path.display()))
 }
 
-fn cache_file(manifest: &Path, relative: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = target_dir(manifest).join("ufs-cache");
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
-    let mut hash = fnv64(manifest.to_string_lossy().as_bytes(), 0xcbf2_9ce4_8422_2325);
-    hash = fnv64(relative.as_bytes(), hash);
-    let alt = fnv64(relative.as_bytes(), 0x1000_0000_01b3);
-    let path = dir.join(format!("{hash:016x}{alt:016x}.bin"));
-    write_if_changed(&path, bytes)?;
-    Ok(path)
-}
-
-fn write_if_changed(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Ok(existing) = std::fs::read(path) {
-        if existing == bytes {
-            return Ok(());
-        }
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).map_err(|err| format!("cannot write {}: {err}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|err| format!("cannot replace {}: {err}", path.display()))?;
-    Ok(())
-}
-
-fn fnv64(data: &[u8], mut hash: u64) -> u64 {
-    for byte in data {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100_0000_01b3);
-    }
-    hash
-}
-
 fn target_dir(manifest: &Path) -> PathBuf {
     if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
@@ -519,15 +630,29 @@ fn canonical_if_exists(path: &Path) -> PathBuf {
 
 fn render(planned: &[Planned]) -> String {
     let mut body = String::from("{\n");
+    let mut seen: Vec<&Path> = Vec::new();
     for (index, asset) in planned.iter().enumerate() {
-        if !matches!(asset.payload, Payload::Raw) {
-            let lit = rust_string(&path_lit(&asset.absolute));
-            body.push_str(&format!(
-                "const _UFS_TRACK_{index}: &[u8] = include_bytes!({lit});\nlet _ = _UFS_TRACK_{index}.len();\n"
-            ));
+        let track = match &asset.payload {
+            Payload::Raw => None,
+            Payload::Omitted => Some(asset.absolute.as_path()),
+            Payload::Literal(_) | Payload::Compressed(_) => asset
+                .extra_track
+                .as_deref()
+                .or(Some(asset.absolute.as_path())),
+        };
+        let Some(path) = track else {
+            continue;
+        };
+        if path.as_os_str().is_empty() || seen.contains(&path) {
+            continue;
         }
+        seen.push(path);
+        let lit = rust_string(&path_lit(path));
+        body.push_str(&format!(
+            "#[allow(dead_code)]\nconst _UFS_TRACK_{index}: &[u8] = include_bytes!({lit});\n"
+        ));
     }
-    body.push_str("__UFS_CRATE__::Embeds::from_entries(vec![\n");
+    body.push_str("__UFS_CRATE__::UFS::from_entries(vec![\n");
     for asset in planned {
         let rel = rust_string(&asset.relative);
         match &asset.payload {
@@ -537,11 +662,17 @@ fn render(planned: &[Planned]) -> String {
                     "__UFS_CRATE__::Entry::embedded({rel}, include_bytes!({lit})),\n"
                 ));
             }
-            Payload::Compressed { cache } => {
-                let lit = rust_string(&path_lit(cache));
+            Payload::Literal(bytes) => {
                 body.push_str(&format!(
-                    "__UFS_CRATE__::Entry::compressed({rel}, {}u64, include_bytes!({lit})),\n",
-                    asset.size
+                    "__UFS_CRATE__::Entry::embedded({rel}, {}),\n",
+                    rust_byte_str(bytes)
+                ));
+            }
+            Payload::Compressed(bytes) => {
+                body.push_str(&format!(
+                    "__UFS_CRATE__::Entry::compressed({rel}, {}u64, {}),\n",
+                    asset.size,
+                    rust_byte_str(bytes)
                 ));
             }
             Payload::Omitted => {
@@ -554,6 +685,32 @@ fn render(planned: &[Planned]) -> String {
     }
     body.push_str("])\n}");
     body
+}
+
+/// Byte-string literal. The result is `&'static [u8]` with no runtime copy.
+fn rust_byte_str(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().saturating_mul(4).saturating_add(3));
+    out.push_str("b\"");
+    for &byte in bytes {
+        match byte {
+            b'\\' | b'"' => {
+                out.push('\\');
+                out.push(byte as char);
+            }
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            0x20..=0x7e => out.push(byte as char),
+            _ => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.push_str("\\x");
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0xf) as usize] as char);
+            }
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn path_lit(path: &Path) -> String {
@@ -620,10 +777,20 @@ mod tests {
         let args = parse_args(r#""examples/files""#).unwrap();
         assert_eq!(args.path, "examples/files");
         assert!(args.read);
-        assert!(!args.compress);
+        assert!(args.compress.is_none());
 
         let args = parse_args(r#""assets", compress = true, root = true, read = false,"#).unwrap();
-        assert!(args.compress && args.root && !args.read);
+        assert_eq!(args.compress, Some(compress::Level::Balanced));
+        assert!(args.root && !args.read);
+
+        let args = parse_args(r#""assets", compress = fast"#).unwrap();
+        assert_eq!(args.compress, Some(compress::Level::Fast));
+        assert!(parse_args(r#""assets", compress = "max", compress = max"#).is_err());
+        let args = parse_args(r#""assets", compress = "best""#).unwrap();
+        assert_eq!(args.compress, Some(compress::Level::Max));
+        let args = parse_args(r#""assets", compress = false"#).unwrap();
+        assert!(args.compress.is_none());
+        assert!(parse_args(r#""a", compress = nope"#).is_err());
 
         let args = parse_args(r#"r"examples/files""#).unwrap();
         assert_eq!(args.path, "examples/files");
@@ -662,8 +829,14 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].relative, "keep.txt");
 
-        let escaped = resolve_root(&manifest, "../outside", false);
-        assert!(escaped.is_err(), "{escaped:?}");
+        let escaped = resolve_root(&manifest, "../outside", false).unwrap();
+        assert_eq!(escaped, outside.canonicalize().unwrap());
+        let shown = collect(&escaped, true, &manifest.join("target")).unwrap();
+        assert_eq!(shown[0].relative, "outside/secret.txt");
+        assert_eq!(
+            collect(&escaped, false, &manifest.join("target")).unwrap()[0].relative,
+            "secret.txt"
+        );
 
         let with_root = collect(&resolved, true, &manifest.join("target")).unwrap();
         assert_eq!(with_root[0].relative, "assets/keep.txt");

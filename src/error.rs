@@ -1,16 +1,12 @@
 use std::fmt;
 use std::path::PathBuf;
 
-/// Failure returned by registry, filesystem, and decompression operations.
+/// Failure returned by filesystem, archive, and decompression operations.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
     /// A filesystem call failed.
     Io(std::io::Error),
-    /// [`crate::UFS::add`] was called with a key that is already present.
-    KeyExists,
-    /// [`crate::UFS::get`] was called with a key that was never added.
-    KeyNotFound,
     /// [`crate::Entry::content`] was called on an entry embedded with `read = false`.
     MissingContent,
     /// A runtime root exists but is not a directory.
@@ -23,14 +19,14 @@ pub enum Error {
     InvalidPath(String),
     /// A file-count or file-size safety limit was hit.
     Limit(&'static str),
+    /// An archive was not a supported format, escaped its root, or was corrupt.
+    Archive(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io(err) => write!(f, "{err}"),
-            Error::KeyExists => write!(f, "key already exists"),
-            Error::KeyNotFound => write!(f, "key not found"),
             Error::MissingContent => {
                 write!(f, "file contents were not embedded (read = false)")
             }
@@ -39,6 +35,7 @@ impl fmt::Display for Error {
             Error::Decompress(msg) => write!(f, "decompress failed: {msg}"),
             Error::InvalidPath(msg) => write!(f, "invalid path: {msg}"),
             Error::Limit(msg) => write!(f, "{msg}"),
+            Error::Archive(msg) => write!(f, "archive: {msg}"),
         }
     }
 }

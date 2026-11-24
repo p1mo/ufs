@@ -1,6 +1,6 @@
 [package]
 name = "ufs-macros"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.85"
 description = "Procedural macro for ufs::bind_dir."
@@ -13,3 +13,10 @@ authors = ["p1mo <101986259+p1mo@users.noreply.github.com>"]
 
 [lib]
 proc-macro = true
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lzma-rs = "0.3"
+sevenz-rust2 = { version = "0.24", features = ["compress"] }
+tar = "0.4"
+zip = "2"

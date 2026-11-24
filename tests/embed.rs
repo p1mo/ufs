@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use ufs::{Bind, Statics, UFS, bind_dir};
+use ufs::{Statics, UFS, bind_dir};
 
 #[test]
 fn embedded_files_match_disk() {
@@ -55,32 +55,107 @@ fn embedded_files_match_disk() {
 }
 
 #[test]
-fn registry_rejects_duplicate_keys() {
-    let mut files = UFS::new();
-    files
-        .add("assets", Bind::Embeds(bind_dir!("examples/files")))
-        .unwrap();
-    assert!(
-        files
-            .add("assets", Bind::Statics(Statics::new("examples/files")))
-            .is_err()
-    );
-    assert!(files.get(&"missing").is_err());
-    assert!(files.get(&"assets").unwrap().embeds().is_some());
-    assert!(files.get(&"assets").unwrap().statics().is_none());
+fn disk_and_embed_are_both_ufs() {
+    let embedded: UFS = bind_dir!("examples/files");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/files");
+    let disk: UFS = UFS::statics(&root).unwrap();
+    assert_eq!(embedded.len(), disk.len());
+    assert!(disk.iter().all(|entry| entry.is_local()));
+    let bytes = embedded.read_all().unwrap();
+    assert_eq!(bytes.len(), embedded.len());
 }
 
 #[test]
-fn codec_sources_match() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let runtime = std::fs::read_to_string(root.join("src/compress.rs")).unwrap();
-    let macros = std::fs::read_to_string(root.join("ufs-macros/src/compress.rs")).unwrap();
-    let strip = |source: &str| {
-        source
-            .lines()
-            .skip_while(|line| line.starts_with("//!") || line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    assert_eq!(strip(&runtime), strip(&macros));
+fn archives_expand_and_can_stay_entries() {
+    let kept = bind_dir!("examples/archives", archives = true, archive_entry = true);
+    let zip = kept.get("pack.zip").expect("archive kept as an entry");
+    assert!(zip.is_archive());
+    let inside = zip.archive().unwrap();
+    assert_eq!(
+        inside
+            .get("pack.zip/hello.txt")
+            .unwrap()
+            .content()
+            .unwrap()
+            .as_ref(),
+        b"hello-zip"
+    );
+    assert_eq!(
+        kept.get("pack.zip/hello.txt")
+            .unwrap()
+            .content()
+            .unwrap()
+            .as_ref(),
+        b"hello-zip"
+    );
+    assert_eq!(
+        kept.get("pack.tar/hello.txt")
+            .unwrap()
+            .content()
+            .unwrap()
+            .as_ref(),
+        b"hello-tar"
+    );
+    assert_eq!(
+        kept.get("pack.tgz/hello.txt")
+            .unwrap()
+            .content()
+            .unwrap()
+            .as_ref(),
+        b"hello-tgz"
+    );
+    assert_eq!(
+        kept.get("pack.txz/hello.txt")
+            .unwrap()
+            .content()
+            .unwrap()
+            .as_ref(),
+        b"hello-txz"
+    );
+
+    let members = bind_dir!("examples/archives", archives = true, archive_entry = false);
+    assert!(members.get("pack.zip").is_none());
+    assert!(members.get("pack.tar").is_none());
+    assert!(members.get("pack.zip/hello.txt").is_some());
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/archives");
+    let walked = Statics::new(&root)
+        .archives(true)
+        .archive_entry(false)
+        .files()
+        .unwrap();
+    assert!(walked.iter().all(|entry| entry.filename != "pack.zip"));
+    assert!(
+        walked
+            .iter()
+            .any(|entry| entry.path.ends_with("pack.zip/hello.txt"))
+    );
+    let kept_walk = Statics::new(&root).archives(true).files().unwrap();
+    assert!(
+        kept_walk
+            .iter()
+            .any(|entry| entry.filename == "pack.zip" && entry.is_archive())
+    );
+}
+
+#[test]
+fn compress_levels_show_root_and_parent_paths() {
+    let fast = bind_dir!("examples/../examples/files", root = true, compress = fast);
+    let max = bind_dir!("examples/files", root = true, compress = "max");
+    let off = bind_dir!("examples/files", root = true, compress = off);
+    let disk = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/files/nested/big-demo.txt"),
+    )
+    .unwrap();
+
+    for (label, set) in [("fast", &fast), ("max", &max), ("off", &off)] {
+        let entry = set.get("files/nested/big-demo.txt").unwrap();
+        assert_eq!(
+            entry.content().unwrap().as_ref(),
+            disk.as_slice(),
+            "{label}"
+        );
+        assert_eq!(entry.is_compressed(), label != "off", "{label}");
+    }
+    assert!(fast.get("files/demo.txt").unwrap().content().is_ok());
 }

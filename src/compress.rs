@@ -1,8 +1,4 @@
-//! ULZ1, a small LZ77 codec.
-//!
-//! `ufs-macros/src/compress.rs` is a copy of this file (a proc-macro crate
-//! cannot share a source file and still be packaged on its own). Keep them
-//! identical. The workspace test `codec_sources_match` fails if they drift.
+//! ULZ1, a small LZ77 codec. The proc-macro crate includes this file directly.
 //!
 //! ```text
 //! b"ULZ1" | raw_len:u32le | tokens
@@ -11,8 +7,9 @@
 //!                followed by distance:u16le (1..=65535)
 //! ```
 //!
-//! Matches may overlap (`distance < length`). The decoder copies one byte at
-//! a time so a run of identical bytes round-trips.
+//! Matches may overlap (`distance < length`). The decoder copies those one
+//! byte at a time. Longer matches are copied as a block. Both paths produce
+//! the same bytes.
 
 /// Largest payload `decompress` will allocate.
 pub const MAX_UNCOMPRESSED: usize = 64 * 1024 * 1024;
@@ -22,12 +19,40 @@ const MIN_MATCH: usize = 4;
 const MAX_MATCH: usize = 131;
 const MAX_DISTANCE: usize = 65_535;
 const MAX_LITERAL: usize = 128;
-const CHAIN_LIMIT: usize = 32;
 
-/// Compress `input` into a self-delimiting ULZ1 blob.
+/// How hard [`compress_with`] searches for matches.
+///
+/// Every level writes the same ULZ1 stream. [`decompress`] does not take a
+/// level. `Entry::content` decompresses automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// First hash-chain hit only.
+    Fast,
+    /// Default effort. `compress = true` selects this.
+    Balanced,
+    /// Longer hash-chain search.
+    Max,
+}
+
+impl Level {
+    fn chain_limit(self) -> usize {
+        match self {
+            Level::Fast => 1,
+            Level::Balanced => 32,
+            Level::Max => 256,
+        }
+    }
+}
+
+/// Compress `input` with [`Level::Balanced`].
 ///
 /// Returns an error when `input` is larger than [`MAX_UNCOMPRESSED`].
 pub fn compress(input: &[u8]) -> Result<Vec<u8>, &'static str> {
+    compress_with(input, Level::Balanced)
+}
+
+/// Compress `input` at `level` into a self-delimiting ULZ1 blob.
+pub fn compress_with(input: &[u8], level: Level) -> Result<Vec<u8>, &'static str> {
     if input.len() > MAX_UNCOMPRESSED {
         return Err("input exceeds compression limit");
     }
@@ -43,7 +68,7 @@ pub fn compress(input: &[u8]) -> Result<Vec<u8>, &'static str> {
 
     while i < input.len() {
         if i + MIN_MATCH <= input.len() {
-            let (match_len, match_dist) = find_match(input, i, &head, &prev);
+            let (match_len, match_dist) = find_match(input, i, &head, &prev, level.chain_limit());
             if match_len >= MIN_MATCH {
                 if literal_start < i {
                     emit_literals(&mut out, &input[literal_start..i]);
@@ -75,20 +100,9 @@ pub fn compress(input: &[u8]) -> Result<Vec<u8>, &'static str> {
 ///
 /// Refuses to allocate more than [`MAX_UNCOMPRESSED`] bytes, and returns an
 /// error instead of panicking on a truncated or inconsistent stream.
-#[allow(dead_code)] // compiled into ufs-macros, which only calls `compress`
+#[allow(dead_code)] // the proc-macro crate compresses and does not decode
 pub fn decompress(input: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if input.len() < 8 || input.get(..4) != Some(MAGIC) {
-        return Err("not ULZ1");
-    }
-    let len_bytes: [u8; 4] = input
-        .get(4..8)
-        .ok_or("truncated header")?
-        .try_into()
-        .map_err(|_| "truncated header")?;
-    let raw_len = u32::from_le_bytes(len_bytes) as usize;
-    if raw_len > MAX_UNCOMPRESSED {
-        return Err("uncompressed size exceeds limit");
-    }
+    let raw_len = payload_len(input)?;
     let mut out = Vec::new();
     out.try_reserve(raw_len).map_err(|_| "out of memory")?;
     let mut i = 8;
@@ -115,11 +129,7 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, &'static str> {
             if out.len() + n > raw_len {
                 return Err("match exceeds declared size");
             }
-            for _ in 0..n {
-                let index = out.len() - dist;
-                let byte = out[index];
-                out.push(byte);
-            }
+            copy_match(&mut out, dist, n);
         }
     }
     if i != input.len() {
@@ -129,6 +139,80 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, &'static str> {
         return Err("length mismatch");
     }
     Ok(out)
+}
+
+/// Declared uncompressed length, without allocating the payload.
+pub(crate) fn payload_len(input: &[u8]) -> Result<usize, &'static str> {
+    if input.len() < 8 || input.get(..4) != Some(MAGIC) {
+        return Err("not ULZ1");
+    }
+    let len_bytes: [u8; 4] = input
+        .get(4..8)
+        .ok_or("truncated header")?
+        .try_into()
+        .map_err(|_| "truncated header")?;
+    let raw_len = u32::from_le_bytes(len_bytes) as usize;
+    if raw_len > MAX_UNCOMPRESSED {
+        return Err("uncompressed size exceeds limit");
+    }
+    Ok(raw_len)
+}
+
+/// Copy `n` bytes from `dist` back. Overlapping runs are copied one byte at a
+/// time so a distance shorter than the match still repeats the source bytes.
+fn copy_match(out: &mut Vec<u8>, dist: usize, n: usize) {
+    let start = out.len() - dist;
+    if dist >= n {
+        let dest = out.len();
+        out.resize(dest + n, 0);
+        out.copy_within(start..start + n, dest);
+        return;
+    }
+    for _ in 0..n {
+        let byte = out[out.len() - dist];
+        out.push(byte);
+    }
+}
+
+/// Compress each buffer at `level`, preserving order.
+///
+/// One buffer runs on the calling thread. More than one buffer is split across
+/// `available_parallelism` workers. Every blob still decodes with [`decompress`].
+pub fn compress_many(inputs: &[&[u8]], level: Level) -> Result<Vec<Vec<u8>>, &'static str> {
+    let n = inputs.len();
+    if n == 0 {
+        return Ok(Vec::new());
+    }
+    if n == 1 {
+        let blob = if level == Level::Balanced {
+            compress(inputs[0])?
+        } else {
+            compress_with(inputs[0], level)?
+        };
+        return Ok(vec![blob]);
+    }
+    let workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .clamp(1, n);
+    let chunk = n.div_ceil(workers);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for start in (0..n).step_by(chunk) {
+            let end = (start + chunk).min(n);
+            let part = &inputs[start..end];
+            handles.push(scope.spawn(move || {
+                part.iter()
+                    .map(|bytes| compress_with(bytes, level))
+                    .collect::<Result<Vec<_>, _>>()
+            }));
+        }
+        let mut out = Vec::with_capacity(n);
+        for handle in handles {
+            out.extend(handle.join().expect("compress panicked")?);
+        }
+        Ok(out)
+    })
 }
 
 fn hash3(data: &[u8], i: usize) -> usize {
@@ -145,7 +229,13 @@ fn insert(input: &[u8], i: usize, head: &mut [u32], prev: &mut [u32]) {
     head[hash] = i as u32 + 1;
 }
 
-fn find_match(input: &[u8], i: usize, head: &[u32], prev: &[u32]) -> (usize, usize) {
+fn find_match(
+    input: &[u8],
+    i: usize,
+    head: &[u32],
+    prev: &[u32],
+    chain_limit: usize,
+) -> (usize, usize) {
     if i + MIN_MATCH > input.len() {
         return (0, 0);
     }
@@ -155,7 +245,7 @@ fn find_match(input: &[u8], i: usize, head: &[u32], prev: &[u32]) -> (usize, usi
     let mut best_dist = 0;
     let mut steps = 0;
     let max_len = (input.len() - i).min(MAX_MATCH);
-    while cur != 0 && steps < CHAIN_LIMIT {
+    while cur != 0 && steps < chain_limit {
         steps += 1;
         let pos = (cur - 1) as usize;
         if pos >= i {
@@ -165,11 +255,7 @@ fn find_match(input: &[u8], i: usize, head: &[u32], prev: &[u32]) -> (usize, usi
         if dist == 0 || dist > MAX_DISTANCE {
             break;
         }
-        if input[pos] == input[i]
-            && input[pos + 1] == input[i + 1]
-            && input[pos + 2] == input[i + 2]
-            && input[pos + 3] == input[i + 3]
-        {
+        if input[pos..pos + MIN_MATCH] == input[i..i + MIN_MATCH] {
             let mut len = MIN_MATCH;
             while len < max_len && input[pos + len] == input[i + len] {
                 len += 1;
@@ -232,6 +318,28 @@ mod tests {
         roundtrip(&[b'q'; 128]);
         roundtrip(&[b'q'; 129]);
         roundtrip(&[b'q'; 256]);
+    }
+
+    #[test]
+    fn levels_share_one_decoder() {
+        let raw = b"abcabcabcabc-zzzzzzzzzzzzzzzz-abcabcabcabcabcabc";
+        let mut sizes = Vec::new();
+        for level in [Level::Fast, Level::Balanced, Level::Max] {
+            let blob = compress_with(raw, level).unwrap();
+            assert_eq!(decompress(&blob).unwrap(), raw);
+            sizes.push(blob.len());
+        }
+        assert!(sizes[2] <= sizes[0]);
+    }
+
+    #[test]
+    fn many_matches_single() {
+        let raw: &[&[u8]] = &[b"abcabcabcabc", b"zzzzzzzzzzzzzzzz", b"hello"];
+        let many = compress_many(raw, Level::Max).unwrap();
+        for (input, blob) in raw.iter().zip(&many) {
+            assert_eq!(decompress(blob).unwrap(), *input);
+            assert_eq!(&compress_with(input, Level::Max).unwrap(), blob);
+        }
     }
 
     #[test]
