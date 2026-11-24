@@ -2,7 +2,7 @@
 
 # ufs
 
-**Small library for reading and embeding directorys.**
+**A small Rust library for embedding directories and reading files from disk.**
 
 [![Crates.io](https://img.shields.io/crates/v/ufs?style=for-the-badge)](https://crates.io/crates/ufs)
 [![Documentation](https://img.shields.io/docsrs/ufs?style=for-the-badge)](https://docs.rs/ufs)
@@ -20,6 +20,7 @@ Embed a directory into a Rust binary at compile time, or walk a directory on dis
 - **Optional ULZ1 compression:** select `fast`, `balanced`, or `max` when embedding; `Entry::content()` transparently decompresses entries.
 - **Archive support:** inspect or expand ZIP, TAR, TAR.GZ, TAR.XZ, and 7z files, including nested archives.
 - **Bounded and defensive reads:** directory traversal skips symlinks, archive paths are sanitized, and file and expansion limits are enforced.
+- **Parallel workflows:** use Rayon-backed parallel iteration over `UFS`; directory collection, batch reads, and archive expansion also use Rayon internally.
 
 ## Requirements
 
@@ -36,7 +37,7 @@ Add `ufs` to the consuming crate's `Cargo.toml`:
 ufs = "0.1"
 ```
 
-The `bind_dir!` macro is re-exported by `ufs`; applications do not need to depend on `ufs-macros` directly.
+The `bind_dir!` macro is re-exported by `ufs`; applications do not need to depend on `ufs-macros` directly. Rayon is an internal dependency for the library. To use the public parallel-iterator interface (`par_iter()` or `into_par_iter()`), add `rayon` as a direct dependency and import its prelude, as shown in [Parallel processing](#parallel-processing).
 
 ## Quick start: embed a directory
 
@@ -154,7 +155,7 @@ fn main() -> Result<(), Error> {
 }
 ```
 
-Runtime disk entries have absolute paths. `Statics::files()` and `UFS::statics()` return entries sorted by absolute path. The plain runtime walk does not expand archives unless archive expansion is explicitly enabled.
+Runtime disk entries have absolute paths. `Statics::files()` and `UFS::statics()` return entries sorted by absolute path. For ordinary directory collection, `Statics::files()` uses Rayon to process multiple top-level subdirectories in parallel. `Statics::walk()` remains a lazy, depth-first iterator. When archive expansion is enabled, `files()` uses that lazy walker so archive and filesystem failures can be returned as individual iterator results. The plain runtime walk does not expand archives unless archive expansion is explicitly enabled.
 
 ## Archives
 
@@ -254,7 +255,58 @@ fn main() -> Result<(), Error> {
 }
 ```
 
-`UFS::read_all()` reads all entries in collection order. Embedded and owned buffers can be borrowed; disk reads and decompression allocate owned byte buffers. Disk reads and decompression are performed in parallel where there is more than one such entry.
+`UFS::read_all()` retrieves all entries in parallel through Rayon and returns them in collection order. Embedded and owned buffers can be borrowed; disk reads and decompression allocate owned byte buffers.
+
+## Parallel processing
+
+`UFS` supports Rayon parallel iterators in addition to ordinary sequential iteration. This is useful when a collection contains many entries and the work performed for each entry can run independently.
+
+To call parallel-iterator methods from your application, add Rayon directly to your `Cargo.toml` and import its prelude:
+
+```toml
+[dependencies]
+ufs = "0.1"
+rayon = "1.12"
+```
+
+```rust
+use rayon::prelude::*;
+use ufs::{Error, UFS};
+
+fn main() -> Result<(), Error> {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/files");
+    let files = UFS::statics(root)?;
+
+    // Process borrowed entries in parallel. Collected results retain entry order.
+    let names: Vec<String> = files
+        .par_iter()
+        .map(|entry| entry.path.display().to_string())
+        .collect();
+
+    // UFS can also be consumed as a parallel iterator.
+    let filenames: Vec<String> = files
+        .into_par_iter()
+        .map(|entry| entry.filename)
+        .collect();
+
+    println!("{} paths and {} filenames", names.len(), filenames.len());
+    Ok(())
+}
+```
+
+The parallel interfaces are:
+
+- `UFS::par_iter()` yields `&Entry` values and leaves the collection available for later use.
+- `(&ufs).into_par_iter()` also yields borrowed `&Entry` values.
+- `ufs.into_par_iter()` consumes the collection and yields owned `Entry` values.
+
+Rayon's `ParallelIterator` methods, such as `map` and `collect`, are available after importing `rayon::prelude::*`. When collecting from these indexed iterators into an ordered collection such as `Vec`, the result follows the original `UFS` entry order even though work runs concurrently.
+
+Several operations use Rayon internally without requiring application-level parallel-iterator code:
+
+- `Statics::files()` parallelizes collection across multiple top-level subdirectories when archive expansion is disabled. `Statics::walk()` remains lazy and depth-first.
+- `UFS::read_all()` retrieves entry contents in parallel and returns them in collection order.
+- `UFS::expand_archives()` opens archive entries in parallel while preserving the collection's entry order and each archive's member grouping.
 
 ## Public API reference
 
@@ -280,17 +332,18 @@ Embeds the regular files below `$path` at compile time. See [Embedding options](
 | `entry` | `UFS::entry(path: &str, bytes: &'static [u8]) -> UFS` | Alias for `embedded`. |
 | `bytes` | `UFS::bytes(path: &str, bytes: Vec<u8>) -> UFS` | Create a collection with one owned buffer. |
 | `archive` | `UFS::archive(path: &str, bytes: &'static [u8]) -> Result<UFS, Error>` | Keep one static archive entry and expand its members, including nested archives. |
-| `statics` | `UFS::statics(path: impl AsRef<Path>) -> Result<UFS, Error>` | Walk a directory at runtime and collect entries. Archives remain unopened. |
+| `statics` | `UFS::statics(path: impl AsRef<Path>) -> Result<UFS, Error>` | Collect a runtime directory walk. Ordinary collection uses Rayon for multiple top-level subdirectories; archives remain unopened. |
 | `r#static` | `UFS::r#static(path: impl AsRef<Path>) -> Result<UFS, Error>` | Raw-identifier alias for `statics`. |
 | `len` | `fn len(&self) -> usize` | Return the number of entries. |
 | `is_empty` | `fn is_empty(&self) -> bool` | Check whether the collection has no entries. |
 | `iter` | `fn iter(&self) -> std::slice::Iter<'_, Entry>` | Iterate over borrowed entries in collection order. |
+| `par_iter` | `fn par_iter(&self) -> rayon::slice::Iter<'_, Entry>` | Iterate over borrowed entries in parallel using Rayon. |
 | `get` | `fn get(&self, path: impl AsRef<Path>) -> Option<&Entry>` | Find the first entry whose stored path equals `path`. |
 | `append` | `fn append(&mut self, other: UFS)` | Move entries from `other` onto the end of this collection. |
 | `read_all` | `fn read_all(&self) -> Result<Vec<Cow<'_, [u8]>>, Error>` | Read every entry in order. |
 | `expand_archives` | `fn expand_archives(&mut self, keep: bool) -> Result<(), Error>` | Expand archive entries in place, optionally retaining each archive entry. |
 
-The collection can be iterated directly:
+The collection can be iterated directly. It also implements Rayon's `IntoParallelIterator` for both `&UFS` (yielding `&Entry`) and owned `UFS` (yielding `Entry`); see [Parallel processing](#parallel-processing) for the required import and dependency.
 
 ```rust
 for entry in &files {
