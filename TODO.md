@@ -75,7 +75,7 @@ Potential benefits:
 
 ## Remote Filesystem Reading
 - [ ] Add optional remote filesystem support for reading arbitrary files, not just archives.
-- [ ] Evaluate **Apache OpenDAL (`opendal`)** as the unified remote storage backend.
+- [ ] Evaluate **Apache OpenDAL (`opendal = "0.59.5"`)** as the unified remote storage backend.
 - [ ] Support remote files through the existing required `path` argument.
 - [ ] Provide a unified interface for local and remote file reading.
 - [ ] Allow each remote storage provider to be enabled independently through Cargo feature flags.
