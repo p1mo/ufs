@@ -68,8 +68,6 @@ Potential benefits:
 | `Some(0)` | Unlimited nested archive reading. |
 | `Some(1..)` | Read nested archives up to the specified depth. |
 
-**Depth starts at `0` for the first archive inside the root. Each additional nesting level increments it by one. The maximum depth is inclusive.**
-
 ## Macro Improvements
 - [ ] Make all macro arguments optional, except for `path`, which must remain required.
 
