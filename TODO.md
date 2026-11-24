@@ -26,7 +26,6 @@
 *Examples only; final selection is open.*
 
 ## Archive Support
-
 - [ ] Use `hivepack = "0.14.0"` as a potential unified archive backend.
 - [ ] Support individual archive formats through separate project-level feature flags.
 - [ ] Investigate additional archive formats supported by Rust crates.
@@ -49,14 +48,27 @@
 
 ### Possible Archive Backend Consolidation
 
-**Investigate whether it makes sense to replace all existing archive implementations and dependencies with the latest hivepack version (`0.14.0`).**
+- [ ] Investigate whether all existing archive implementations and dependencies could be replaced with the latest `hivepack` version (`0.14.0`).
 
-The goal would be to:
-- Use hivepack as the unified backend for all supported archive formats.
+Potential benefits:
+- Use hivepack as a unified backend for all supported archive formats.
 - Replace individual archive crates wherever hivepack provides suitable functionality.
-- Map project-level feature flags directly to the corresponding hivepack features.
+- Map project-level feature flags to the corresponding hivepack features.
 - Reduce dependency duplication, maintenance overhead, and unnecessary compilation.
 - Keep unsupported or unsuitable formats independently implemented where necessary.
+
+## Nested Archive Reading & Depth Control
+- [ ] Add a configurable `Option<usize>` setting to control nested archive reading.
+- [ ] Always read the root archive when its format is enabled.
+- [ ] Support the following depth behavior:
+
+| Setting | Behavior |
+|---|---|
+| `None` | Disable nested archive reading. |
+| `Some(0)` | Unlimited nested archive reading. |
+| `Some(1..)` | Read nested archives up to the specified depth. |
+
+**Depth starts at `0` for the first archive inside the root. Each additional nesting level increments it by one. The maximum depth is inclusive.**
 
 ## Macro Improvements
 - [ ] Make all macro arguments optional, except for `path`, which must remain required.
